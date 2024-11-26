@@ -116,10 +116,6 @@ def main():
         try:
             certificates = extract_certificates(website)
 
-            download = False
-            if args.download:
-                download = True
-
             for cert in certificates:
                 validate_certificate(cert)
 
