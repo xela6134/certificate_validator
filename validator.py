@@ -1,4 +1,4 @@
-import sys, socket, ssl, argparse, os
+import sys, socket, ssl, argparse, os, datetime
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.asymmetric import rsa, ec
@@ -17,38 +17,55 @@ def extract_certificates(domain_name, port=443):
     """
     certificates = []
     
-    # Secure connection made through SSL Protocol
+    # Create an SSL context that does not verify certificates
     context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
 
-    # Creating secure socket connection
-    with socket.create_connection((domain_name, port)) as sock:
-        with context.wrap_socket(sock, server_hostname=domain_name) as ssock:
-            
-            # Attempt to fetch the full certificate chain (if supported)
-            cert_chain = ssock.get_verified_chain()
-            if not cert_chain:
-                print(f"Cannot fetch certificate chain for {domain_name}. Attempting to fetch only leaf certificate")
-
-                der_cert = ssock.getpeercert(binary_form=True)
-                pem_cert = ssl.DER_cert_to_PEM_cert(der_cert)
+    try:
+        # Create a secure socket connection
+        with socket.create_connection((domain_name, port)) as sock:
+            with context.wrap_socket(sock, server_hostname=domain_name) as ssock:
                 
-                leaf_cert = x509.load_der_x509_certificate(der_cert, default_backend())
-                certificates.append(leaf_cert)
+                # Attempt to fetch the full certificate chain (if supported)
+                cert_chain = ssock.get_verified_chain()
+                if not cert_chain:
+                    print(f"Cannot fetch certificate chain for {domain_name}. Attempting to fetch only leaf certificate.")
 
-                return certificates
+                    der_cert = ssock.getpeercert(binary_form=True)
+                    leaf_cert = x509.load_der_x509_certificate(der_cert, default_backend())
+                    certificates.append(leaf_cert)
 
-            for cert in cert_chain:
-                cert_obj = x509.load_der_x509_certificate(cert, default_backend())
-                certificates.append(cert_obj)
-    
+                    return certificates
+
+                for cert in cert_chain:
+                    cert_obj = x509.load_der_x509_certificate(cert, default_backend())
+                    certificates.append(cert_obj)
+
+    except Exception as e:
+        print(f"Error fetching certificates for {domain_name}: {e}")
+
     return certificates
 
-def validate_certificate(cert):
+def validate_certificate(cert, website_name, cert_depth):
     """
     Default validation logic for certificates.
     """
-    print(f"Type: {type(cert)} - {cert}")
+    
+    # 1. Check certificate validity period
+    current_datetime = datetime.datetime.now(datetime.UTC)
+    valid_before = cert.not_valid_before_utc
+    valid_after = cert.not_valid_after_utc
 
+    if valid_after < current_datetime:
+        print(f"Certificate for {website_name} at depth {cert_depth} has expired.")
+        return False
+    elif valid_before > current_datetime:
+        print(f"Certificate for {website_name} at depth {cert_depth} is valid from the future.")
+        return False
+    
+    return True
+    
 def print_cryptography_info(cert):
     """
     Prints cryptography-related information for certificates.
@@ -58,8 +75,8 @@ def print_cryptography_info(cert):
     print(f"Subject         : {cert.subject}")
     print(f"Issuer          : {cert.issuer}")
     print(f"Serial No       : {cert.serial_number}")
-    print(f"Not Valid Before: {cert.not_valid_before}")
-    print(f"Not Valid After : {cert.not_valid_after}")
+    print(f"Not Valid Before: {cert.not_valid_before_utc}")
+    print(f"Not Valid After : {cert.not_valid_after_utc}")
     print(f"Hash Algorithm  : {cert.signature_hash_algorithm}")
 
     public_key = cert.public_key()
@@ -76,14 +93,12 @@ def print_cryptography_info(cert):
         curve = public_key.curve.name       # Get the curve name (e.g., secp256r1)
         print("\nElliptic Curve Public Key Components)")
         print(f"Curve: {curve}")
-        print(f"X: {public_numbers.x}")     # X-coordinate of the public key
-        print(f"Y: {public_numbers.y}")     # Y-coordinate of the public key
+        print(f"X: {public_numbers.x}")
+        print(f"Y: {public_numbers.y}")
     else:
         print("\nThe public key type is not supported.")
 
 def download_certificates(certs, website_name):
-    cert_depth = 0
-
     if not os.path.exists('downloads'):
         os.mkdir('downloads')
 
@@ -99,7 +114,7 @@ def download_certificates(certs, website_name):
         cert_file.close()
         cert_depth += 1
         
-def main():
+def main():    
     parser = argparse.ArgumentParser(description="Certificate Validator Program")
     parser.add_argument("websites", nargs="*", help="List of websites to validate certificates for")
     parser.add_argument("-c", "--cryptography", action="store_true", help="Print cryptography information for leaf certificate")
@@ -110,27 +125,34 @@ def main():
         print("No websites provided. Use the -h flag for help.")
         sys.exit(1)
 
-    for website in args.websites:
-        print(f"\nProcessing certificates for {website}:")
+    for website_name in args.websites:
+        print(f"\nProcessing certificates for {website_name}:")
         
         try:
-            certificates = extract_certificates(website)
+            certificates = extract_certificates(website_name)
 
+            cert_depth = 0
+            cert_valid = True
             for cert in certificates:
-                validate_certificate(cert)
+                if validate_certificate(cert, website_name, cert_depth) == False:
+                    cert_valid = False
+                    break
+            
+            if cert_valid == True:
+                print(f"Certificates all valid for {website_name}")
 
             # Additional Info
             if args.cryptography:
                 print_cryptography_info(certificates[0])
                 
             if args.download:
-                download_certificates(certificates, website)
+                download_certificates(certificates, website_name)
 
         except ConnectionResetError:
-            print(f"Connection reset when trying to connect to {website}")
+            print(f"Connection reset when trying to connect to {website_name}")
             continue
         except socket.gaierror:
-            print(f"Host not known: {website}")
+            print(f"Host not known: {website_name}")
             continue
 
 if __name__ == '__main__':
