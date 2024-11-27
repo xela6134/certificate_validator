@@ -1,8 +1,8 @@
 import sys, socket, ssl, argparse, os, datetime
-from cryptography import x509
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.asymmetric import rsa, ec
-from cryptography.hazmat.primitives import serialization
+from cryptography import x509                                           # type: ignore
+from cryptography.hazmat.backends import default_backend                # type: ignore
+from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding  # type: ignore
+from cryptography.hazmat.primitives import serialization, hashes        # type: ignore
 
 def extract_certificates(domain_name, port=443):
     """
@@ -18,6 +18,7 @@ def extract_certificates(domain_name, port=443):
     certificates = []
     
     # Create an SSL context that does not verify certificates
+    # Ironically, you need an insecure connection to run this program
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
@@ -47,56 +48,97 @@ def extract_certificates(domain_name, port=443):
 
     return certificates
 
-def validate_certificate(cert, website_name, cert_depth):
+def validate_certificate(certificates, website_name):
     """
     Default validation logic for certificates.
     """
-    
     # 1. Check certificate validity period
-    current_datetime = datetime.datetime.now(datetime.UTC)
-    valid_before = cert.not_valid_before_utc
-    valid_after = cert.not_valid_after_utc
+    for cert_depth, cert in enumerate(certificates):
+        current_datetime = datetime.datetime.now(datetime.UTC)
+        valid_before = cert.not_valid_before_utc
+        valid_after = cert.not_valid_after_utc
 
-    if valid_after < current_datetime:
-        print(f"Certificate for {website_name} at depth {cert_depth} has expired.")
+        if valid_after < current_datetime:
+            print(f"Certificate for {website_name} at depth {cert_depth} has expired.")
+            return False
+        elif valid_before > current_datetime:
+            print(f"Certificate for {website_name} at depth {cert_depth} is valid from the future.")
+            return False
+
+    for depth, cert in enumerate(certificates):
+        print(f"depth {depth}: {cert}")
+
+    # 2. Validate certificate signatures
+    for cert_depth in range(len(certificates) - 1):
+        cert = certificates[cert_depth]
+        issuer_cert = certificates[cert_depth + 1]
+
+        try:
+            issuer_public_key = issuer_cert.public_key()
+
+            # Verify the certificate's signature
+            # 1. Client hashes cert.tbs_certificate_bytes using cert.signature_hash_algorithm
+            # 2. Client decrypts cert.signature using issuer_public_key
+            # 3. If the hashes match, the signature is valid
+            issuer_public_key.verify(
+                cert.signature,
+                cert.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                cert.signature_hash_algorithm
+            )
+        except Exception as e:
+            print(f"Certificate for {website_name} at depth {cert_depth} failed signature verification: {e}")
+            return False
+
+    # Optionally, validate the root certificate's self-signature
+    root_cert = certificates[-1]
+    try:
+        root_public_key = root_cert.public_key()
+        root_public_key.verify(
+            root_cert.signature,
+            root_cert.tbs_certificate_bytes,
+            padding.PKCS1v15(),
+            root_cert.signature_hash_algorithm
+        )
+    except Exception as e:
+        print(f"Root certificate self-signature verification failed: {e}")
         return False
-    elif valid_before > current_datetime:
-        print(f"Certificate for {website_name} at depth {cert_depth} is valid from the future.")
-        return False
-    
+
     return True
     
-def print_cryptography_info(cert):
+def print_cryptography_info(certificates):
     """
     Prints cryptography-related information for certificates.
     """
-    print("\nRoot Certificate Cryptography Information:")
 
-    print(f"Subject         : {cert.subject}")
-    print(f"Issuer          : {cert.issuer}")
-    print(f"Serial No       : {cert.serial_number}")
-    print(f"Not Valid Before: {cert.not_valid_before_utc}")
-    print(f"Not Valid After : {cert.not_valid_after_utc}")
-    print(f"Hash Algorithm  : {cert.signature_hash_algorithm}")
+    for depth, cert in enumerate(certificates):
+        print(f"\nCertificate Cryptography Information in depth {depth}:")
 
-    public_key = cert.public_key()
-    if isinstance(public_key, rsa.RSAPublicKey):
-        # Handle RSA key
-        public_numbers = public_key.public_numbers()
-        print("\nRaw RSA Public Key Components)")
-        print(f"Modulus (n): {public_numbers.n}")
-        print(f"Public Exponent (e): {public_numbers.e}")
-        print(f"Key Size: {public_key.key_size} bits")
-    elif isinstance(public_key, ec.EllipticCurvePublicKey):
-        # Handle ECC key
-        public_numbers = public_key.public_numbers()
-        curve = public_key.curve.name       # Get the curve name (e.g., secp256r1)
-        print("\nElliptic Curve Public Key Components)")
-        print(f"Curve: {curve}")
-        print(f"X: {public_numbers.x}")
-        print(f"Y: {public_numbers.y}")
-    else:
-        print("\nThe public key type is not supported.")
+        print(f"Subject         : {cert.subject}")
+        print(f"Issuer          : {cert.issuer}")
+        print(f"Serial No       : {cert.serial_number}")
+        print(f"Not Valid Before: {cert.not_valid_before_utc}")
+        print(f"Not Valid After : {cert.not_valid_after_utc}")
+        print(f"Hash Algorithm  : {cert.signature_hash_algorithm}")
+
+        public_key = cert.public_key()
+        if isinstance(public_key, rsa.RSAPublicKey):
+            # Handle RSA key
+            public_numbers = public_key.public_numbers()
+            print("\nRaw RSA Public Key Components)")
+            print(f"Modulus (n): {public_numbers.n}")
+            print(f"Public Exponent (e): {public_numbers.e}")
+            print(f"Key Size: {public_key.key_size} bits")
+        elif isinstance(public_key, ec.EllipticCurvePublicKey):
+            # Handle ECC key
+            public_numbers = public_key.public_numbers()
+            curve = public_key.curve.name       # Get the curve name (e.g., secp256r1)
+            print("\nElliptic Curve Public Key Components)")
+            print(f"Curve: {curve}")
+            print(f"X: {public_numbers.x}")
+            print(f"Y: {public_numbers.y}")
+        else:
+            print("\nThe public key type is not supported.")
 
 def download_certificates(certs, website_name):
     if not os.path.exists('downloads'):
@@ -131,19 +173,12 @@ def main():
         try:
             certificates = extract_certificates(website_name)
 
-            cert_depth = 0
-            cert_valid = True
-            for cert in certificates:
-                if validate_certificate(cert, website_name, cert_depth) == False:
-                    cert_valid = False
-                    break
-            
-            if cert_valid == True:
+            if validate_certificate(certificates, website_name) == True:
                 print(f"Certificates all valid for {website_name}")
-
+            
             # Additional Info
             if args.cryptography:
-                print_cryptography_info(certificates[0])
+                print_cryptography_info(certificates)
                 
             if args.download:
                 download_certificates(certificates, website_name)
