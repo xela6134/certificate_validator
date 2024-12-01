@@ -94,18 +94,28 @@ def validate_certificate_signatures(certificates, website_name):
 
         try:
             issuer_public_key = issuer_cert.public_key()
-            issuer_public_key.verify(
-                cert.signature,
-                cert.tbs_certificate_bytes,
-                padding.PKCS1v15(),
-                cert.signature_hash_algorithm
-            )
+            
+            if isinstance(issuer_public_key, rsa.RSAPublicKey):
+                issuer_public_key.verify(
+                    cert.signature,
+                    cert.tbs_certificate_bytes,
+                    padding.PKCS1v15(),
+                    cert.signature_hash_algorithm
+                )
+            elif isinstance(issuer_public_key, ec.EllipticCurvePublicKey):
+                issuer_public_key.verify(
+                    cert.signature,
+                    cert.tbs_certificate_bytes,
+                    ec.ECDSA(cert.signature_hash_algorithm)
+                )
+            else:
+                print(f"Unsupported public key type for certificate at depth {cert_depth}.")
+                return False
         except Exception as e:
             print(f"Certificate for {website_name} at depth {cert_depth} failed signature verification: {e}")
             return False
 
     return True
-
 
 def check_self_signed_certificates(certificates, website_name):
     """
@@ -161,6 +171,14 @@ def validate_trusted_root(certificates, website_name):
 
     return True
 
+def check_revocation(certificates, website_name):
+    # Not yet implemented, will use OCSP and CRLs for this validation.
+    return True
+
+def check_issuer_and_subject(certificates, website_name):
+    
+    return True
+
 def validate_certificate(certificates, website_name):
     """
     Default validation logic for certificates
@@ -175,6 +193,12 @@ def validate_certificate(certificates, website_name):
         return False
 
     if not validate_trusted_root(certificates, website_name):
+        return False
+    
+    if not check_revocation(certificates, website_name):
+        return False
+
+    if not check_issuer_and_subject(certificates, website_name):
         return False
 
     return True
@@ -205,7 +229,7 @@ def print_cryptography_info(certificates):
         elif isinstance(public_key, ec.EllipticCurvePublicKey):
             # Handle ECC key
             public_numbers = public_key.public_numbers()
-            curve = public_key.curve.name       # Get the curve name (e.g., secp256r1)
+            curve = public_key.curve.name
             print("\nElliptic Curve Public Key Components)")
             print(f"Curve: {curve}")
             print(f"X: {public_numbers.x}")
