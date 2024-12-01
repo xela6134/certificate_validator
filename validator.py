@@ -64,13 +64,13 @@ def load_trusted_root_certificates():
             trusted_certs.append(cert)
     return trusted_certs
 
-def validate_certificate(certificates, website_name):
+def validate_certificate_validity(certificates, website_name):
     """
-    Default validation logic for certificates.
+    Checks if each certificate in the chain is within its validity period.
     """
-    # 1. Check certificate validity period
+    current_datetime = datetime.datetime.now(datetime.UTC)
+
     for cert_depth, cert in enumerate(certificates):
-        current_datetime = datetime.datetime.now(datetime.UTC)
         valid_before = cert.not_valid_before_utc
         valid_after = cert.not_valid_after_utc
 
@@ -81,19 +81,19 @@ def validate_certificate(certificates, website_name):
             print(f"Certificate for {website_name} at depth {cert_depth} is valid from the future.")
             return False
 
-    # 2. Validate certificate signatures
+    return True
+
+
+def validate_certificate_signatures(certificates, website_name):
+    """
+    Validates the signature of each certificate against the issuer's public key.
+    """
     for cert_depth in range(len(certificates) - 1):
         cert = certificates[cert_depth]
         issuer_cert = certificates[cert_depth + 1]
 
         try:
             issuer_public_key = issuer_cert.public_key()
-
-            # Verify the certificate's signature
-            # 1. Client hashes cert.tbs_certificate_bytes using cert.signature_hash_algorithm
-            # 2. Client decrypts cert.signature using issuer_public_key
-            # 3. If the hashes match, the signature is valid
-            
             issuer_public_key.verify(
                 cert.signature,
                 cert.tbs_certificate_bytes,
@@ -104,9 +104,14 @@ def validate_certificate(certificates, website_name):
             print(f"Certificate for {website_name} at depth {cert_depth} failed signature verification: {e}")
             return False
 
-    # 3. Check if certificates are self-signed
+    return True
+
+
+def check_self_signed_certificates(certificates, website_name):
+    """
+    Checks if any intermediate certificates are self-signed.
+    """
     for cert_depth, cert in enumerate(certificates[:-1]):
-        # No need to check signature if issuer & subject is different
         if cert.issuer != cert.subject:
             continue
 
@@ -115,7 +120,7 @@ def validate_certificate(certificates, website_name):
             public_key.verify(
                 cert.signature,
                 cert.tbs_certificate_bytes,
-                padding.PKCS1v15(),  # Use appropriate padding for your case
+                padding.PKCS1v15(),
                 cert.signature_hash_algorithm,
             )
         except Exception:
@@ -124,19 +129,24 @@ def validate_certificate(certificates, website_name):
             print(f"Certificate for {website_name} at depth {cert_depth} is self-signed.")
             return False
 
-    # 4. Check if root certificate is trusted
-    # Optionally, validate the root certificate's self-signature
+    return True
+
+
+def validate_trusted_root(certificates, website_name):
+    """
+    Validates the root certificate's trustworthiness and self-signature.
+    """
     trusted_certs = load_trusted_root_certificates()
     root_cert = certificates[-1]
-    
+
     if root_cert.issuer != root_cert.subject:
-        print(f"Invalid chain: Root certificate for {website_name} is not trusted")
+        print(f"Invalid chain: Root certificate for {website_name} is not self-signed.")
         return False
-    
+
     if root_cert not in trusted_certs:
         print(f"Root certificate for {website_name} is not trusted.")
         return False
-    
+
     try:
         root_public_key = root_cert.public_key()
         root_public_key.verify(
@@ -147,6 +157,24 @@ def validate_certificate(certificates, website_name):
         )
     except Exception as e:
         print(f"Root certificate for {website_name} failed signature validation: {e}")
+        return False
+
+    return True
+
+def validate_certificate(certificates, website_name):
+    """
+    Default validation logic for certificates
+    """
+    if not validate_certificate_validity(certificates, website_name):
+        return False
+
+    if not validate_certificate_signatures(certificates, website_name):
+        return False
+
+    if not check_self_signed_certificates(certificates, website_name):
+        return False
+
+    if not validate_trusted_root(certificates, website_name):
         return False
 
     return True
