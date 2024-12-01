@@ -106,25 +106,32 @@ def validate_certificate(certificates, website_name):
 
     # 3. Check if certificates are self-signed
     for cert_depth, cert in enumerate(certificates[:-1]):
-        if cert.issuer == cert.subject:
-            try:
-                print("Self-signed.")
-                public_key = cert.public_key()
-                public_key.verify(
-                    cert.signature,
-                    cert.tbs_certificate_bytes,
-                    padding.PKCS1v15(),
-                    cert.signature_hash_algorithm
-                )
-                print(f"Certificate for {website_name} at depth {cert_depth} is self-signed.")
-            except Exception as e:
-                print(f"Certificate for {website_name} at depth {cert_depth} failed self-signature verification: {e}")
-                return False
-    
+        # No need to check signature if issuer & subject is different
+        if cert.issuer != cert.subject:
+            continue
+
+        try:
+            public_key = cert.public_key()
+            public_key.verify(
+                cert.signature,
+                cert.tbs_certificate_bytes,
+                padding.PKCS1v15(),  # Use appropriate padding for your case
+                cert.signature_hash_algorithm,
+            )
+        except Exception:
+            continue
+        else:
+            print(f"Certificate for {website_name} at depth {cert_depth} is self-signed.")
+            return False
+
     # 4. Check if root certificate is trusted
     # Optionally, validate the root certificate's self-signature
     trusted_certs = load_trusted_root_certificates()
     root_cert = certificates[-1]
+    
+    if root_cert.issuer != root_cert.subject:
+        print(f"Invalid chain: Root certificate for {website_name} is not trusted")
+        return False
     
     if root_cert not in trusted_certs:
         print(f"Root certificate for {website_name} is not trusted.")
