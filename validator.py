@@ -1,4 +1,5 @@
 import sys, socket, ssl, argparse, os, datetime
+import certifi                                                          # type: ignore
 from cryptography import x509                                           # type: ignore
 from cryptography.hazmat.backends import default_backend                # type: ignore
 from cryptography.hazmat.primitives.asymmetric import rsa, ec, padding  # type: ignore
@@ -48,6 +49,21 @@ def extract_certificates(domain_name, port=443):
 
     return certificates
 
+def load_trusted_root_certificates():
+    cert_path = certifi.where()
+    
+    with open(cert_path, "rb") as cert_file:
+        pem_data = cert_file.read()
+    
+    # Split the file into individual certificates
+    trusted_certs = []
+    for cert_pem in pem_data.split(b"-----END CERTIFICATE-----"):
+        if cert_pem.strip():  # Ensure it's not empty
+            cert_pem += b"-----END CERTIFICATE-----"
+            cert = x509.load_pem_x509_certificate(cert_pem)
+            trusted_certs.append(cert)
+    return trusted_certs
+
 def validate_certificate(certificates, website_name):
     """
     Default validation logic for certificates.
@@ -65,9 +81,6 @@ def validate_certificate(certificates, website_name):
             print(f"Certificate for {website_name} at depth {cert_depth} is valid from the future.")
             return False
 
-    for depth, cert in enumerate(certificates):
-        print(f"depth {depth}: {cert}")
-
     # 2. Validate certificate signatures
     for cert_depth in range(len(certificates) - 1):
         cert = certificates[cert_depth]
@@ -80,6 +93,7 @@ def validate_certificate(certificates, website_name):
             # 1. Client hashes cert.tbs_certificate_bytes using cert.signature_hash_algorithm
             # 2. Client decrypts cert.signature using issuer_public_key
             # 3. If the hashes match, the signature is valid
+            
             issuer_public_key.verify(
                 cert.signature,
                 cert.tbs_certificate_bytes,
@@ -90,8 +104,32 @@ def validate_certificate(certificates, website_name):
             print(f"Certificate for {website_name} at depth {cert_depth} failed signature verification: {e}")
             return False
 
+    # 3. Check if certificates are self-signed
+    for cert_depth, cert in enumerate(certificates[:-1]):
+        if cert.issuer == cert.subject:
+            try:
+                print("Self-signed.")
+                public_key = cert.public_key()
+                public_key.verify(
+                    cert.signature,
+                    cert.tbs_certificate_bytes,
+                    padding.PKCS1v15(),
+                    cert.signature_hash_algorithm
+                )
+                print(f"Certificate for {website_name} at depth {cert_depth} is self-signed.")
+            except Exception as e:
+                print(f"Certificate for {website_name} at depth {cert_depth} failed self-signature verification: {e}")
+                return False
+    
+    # 4. Check if root certificate is trusted
     # Optionally, validate the root certificate's self-signature
+    trusted_certs = load_trusted_root_certificates()
     root_cert = certificates[-1]
+    
+    if root_cert not in trusted_certs:
+        print(f"Root certificate for {website_name} is not trusted.")
+        return False
+    
     try:
         root_public_key = root_cert.public_key()
         root_public_key.verify(
@@ -101,7 +139,7 @@ def validate_certificate(certificates, website_name):
             root_cert.signature_hash_algorithm
         )
     except Exception as e:
-        print(f"Root certificate self-signature verification failed: {e}")
+        print(f"Root certificate for {website_name} failed signature validation: {e}")
         return False
 
     return True
@@ -169,7 +207,6 @@ def main():
 
     for website_name in args.websites:
         print(f"\nProcessing certificates for {website_name}:")
-        
         try:
             certificates = extract_certificates(website_name)
 
@@ -189,6 +226,8 @@ def main():
         except socket.gaierror:
             print(f"Host not known: {website_name}")
             continue
+        except Exception as e:
+            print(f"Error occured while connecting to {website_name}: {e}")
 
 if __name__ == '__main__':
     main()
